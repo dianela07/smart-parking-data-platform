@@ -3,7 +3,7 @@ import pandas as pd
 from pathlib import Path
 
 # Configuración
-CITY = "Aarhus"
+CITY = "Basel"
 RAW_DIR = Path(f"data/raw/{CITY}")
 PROCESSED_DIR = Path("data/processed")
 PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
@@ -15,7 +15,7 @@ def process_data():
     with open(raw_file, "r", encoding="utf-8") as f:
         data = json.load(f)
 
-    records = data.get("result", {}).get("records", [])
+    records = data.get("results", [])
     
     if not records:
         print(f"[{CITY}] No records found")
@@ -23,15 +23,26 @@ def process_data():
 
     # Crear DataFrame
     df = pd.DataFrame(records)
-    
-    # Seleccionar y renombrar columnas principales
+
+    # Calcular plazas ocupadas y porcentaje de ocupación
+    df["total"] = pd.to_numeric(df.get("total"), errors="coerce")
+    df["free"] = pd.to_numeric(df.get("free"), errors="coerce")
+    df["occupied"] = df.apply(lambda row: row["total"] - row["free"] if pd.notnull(row["total"]) else None, axis=1)
+    df["occupancy_pct"] = df.apply(lambda row: (row["occupied"] / row["total"] * 100) if pd.notnull(row["total"]) else None, axis=1)
+
+    # Seleccionar columnas de interés y renombrar
     df = df.rename(columns={
-        "garageCode": "name",
-        "totalSpaces": "capacity",
-        "vehicleCount": "occupied",
-        "date": "timestamp"
-    })
-    
+        "name": "parking_name",
+        "total": "capacity",
+        "free": "free_spaces",
+        "status": "status",
+        "published": "timestamp",
+        "link": "url",
+        "geo_point_2d": "coords",
+        "address": "address",
+        "lot_type": "lot_type"
+    })[["parking_name", "capacity", "free_spaces", "occupied", "occupancy_pct", "status", "timestamp", "address", "lot_type", "url", "coords"]]
+
     # Guardar CSV procesado
     processed_file = PROCESSED_DIR / f"{CITY}_parking.csv"
     df.to_csv(processed_file, index=False)

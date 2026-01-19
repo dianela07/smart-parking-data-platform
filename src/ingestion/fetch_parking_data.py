@@ -4,8 +4,8 @@ from pathlib import Path
 from datetime import datetime
 
 # Configuración de la ciudad
-CITY = "Aarhus"
-API_URL = "https://admin.opendata.dk/api/action/datastore_search?resource_id=2a82a145-0195-4081-a13c-b0e587e9b89c"
+CITY = "Basel"
+API_URL = "https://data.bs.ch/api/explore/v2.1/catalog/datasets/100088/records?select=published%2Clast_downloaded%2Cgeo_point_2d%2Cname%2Ctotal%2Cfree%2Cstatus%2Cid%2Caddress%2Clot_type%2Clink&limit=100&lang=de&timezone=Europe%2FZurich"
 
 # Carpeta para guardar los datos crudos
 RAW_DIR = Path(f"data/raw/{CITY}")

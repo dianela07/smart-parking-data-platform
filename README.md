@@ -1,19 +1,48 @@
-# Smart Parking Data Platform – Aarhus
+# Urban Parking Availability Prediction – Basel
 
-This project fetches, processes, and visualizes parking data for **Aarhus, Denmark**. 
-It is designed to help users and analysts understand parking occupancy trends and make predictions about parking availability.
+## Project Overview
+End-to-end data platform for real-time urban parking availability analysis and prediction, focused on **Basel, Switzerland**.
+
+This project ingests parking data from public APIs, processes and stores it in PostgreSQL, applies machine learning models to predict future parking occupancy, and exposes results via REST APIs and an interactive Streamlit dashboard. The system is containerized with Docker for reproducibility.
 
 ## Features
+- Data ingestion from **Basel public parking API**
+- Data cleaning and processing with Pandas & NumPy
+- Storage in PostgreSQL with reproducible pipelines
+- Exploratory data analysis and visualization
+- Predictive modeling using Random Forest
+- API design with FastAPI
+- Interactive dashboard with Streamlit
+- Dockerized deployment for development and testing
 
-- **Data Fetching:** Automatically downloads raw parking data from the Aarhus open data API.
-- **Data Processing:** Converts raw JSON into a clean CSV format with the following columns:
-  - `_id`: Record ID
-  - `timestamp`: Time of the record
-  - `name`: Parking garage code/name
-  - `capacity`: Total parking spaces
-  - `occupied`: Currently occupied spaces
-- **Data Analysis & Visualization:** Ready for creating visualizations and predictive models.
-- **CSV Export:** Processed data is saved at `data/processed/Aarhus_parking.csv`.
+## Skills Demonstrated
+- **Data Engineering:** ingestion, cleaning, SQL modeling, pipelines
+- **Machine Learning:** feature engineering, model training, predictions
+- **Backend:** FastAPI, PostgreSQL, REST APIs
+- **Visualization:** Matplotlib, Seaborn, Streamlit dashboards
+- **DevOps:** Docker, environment variables, modular architecture
 
+## Installation & Usage
+```bash
+# Clone repository
+git clone <your-repo-url>
+cd smart-parking-data-platform
 
+# Create virtual environment
+python -m venv venv
+source venv/bin/activate  # or venv\Scripts\activate on Windows
 
+# Install dependencies
+pip install -r requirements.txt
+
+# Fetch Basel data
+python src/ingestion/fetch_parking_data.py --city Basel
+
+# Process data
+python src/processing/process_parking_data.py --city Basel
+
+# Run FastAPI server
+uvicorn src.api.app:app --reload
+
+# Run dashboard
+streamlit run src/visualization/dashboard.py
