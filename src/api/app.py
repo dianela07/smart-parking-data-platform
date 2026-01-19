@@ -37,14 +37,14 @@ def predict(data: PredictionRequest):
     hour = dt.hour
     weekday = dt.weekday()
     
-    # Preparar features para el modelo avanzado
-    pred = model.predict([[hour, weekday, capacity, free_spaces]])[0]
+    # Preparar features para el modelo (sin free_spaces)
+    pred = model.predict([[hour, weekday, capacity]])[0]
     pred = max(0, min(capacity, int(pred)))  # asegurar límites
     
     return {
         "garage": garage,
         "datetime": data.datetime,
         "predicted_occupied": pred,
-        "capacity": capacity,
-        "free_spaces": free_spaces
+        "capacity": int(capacity),
+        "predicted_free": int(capacity - pred)
     }
