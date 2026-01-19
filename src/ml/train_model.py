@@ -1,35 +1,70 @@
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import pandas as pd
 import numpy as np
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_absolute_error
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 import joblib
-import os
 from pathlib import Path
+from datetime import datetime
+
+# Database imports
+try:
+    from database.connection import init_db, session_scope, get_db_info
+    from database.repository import ParkingRepository
+    DB_AVAILABLE = True
+except ImportError:
+    DB_AVAILABLE = False
 
 # Crear carpeta 'models' si no existe
 os.makedirs("models", exist_ok=True)
 
-# Archivos de datos
+# Archivos de datos (fallback)
 CURRENT_FILE = Path("data/processed/Basel_parking.csv")
 HISTORICAL_FILE = Path("data/historical/Basel_parking_history.csv")
+CITY = "Basel"
 
 
 def load_training_data():
     """
     Carga datos para entrenamiento.
-    Prioriza datos históricos si existen, sino genera datos sintéticos.
+    Prioriza: 1) Base de datos, 2) CSV historico, 3) Datos sinteticos
     """
+    MIN_RECORDS = 50
+    
+    # Intentar cargar desde base de datos
+    if DB_AVAILABLE:
+        try:
+            init_db()
+            db_info = get_db_info()
+            print(f"Conectando a {db_info['type']}...")
+            
+            with session_scope() as session:
+                df = ParkingRepository.get_training_data(session, CITY)
+                
+                if len(df) >= MIN_RECORDS:
+                    print(f"  [OK] {len(df)} registros cargados desde base de datos")
+                    df['weekday'] = df['day_of_week'] if 'day_of_week' in df.columns else 0
+                    return df, False
+                else:
+                    print(f"  [AVISO] Solo {len(df)} registros en DB, insuficientes")
+        except Exception as e:
+            print(f"  [ERROR] No se pudo conectar a DB: {e}")
+    
+    # Fallback: Cargar desde CSV historico
     if HISTORICAL_FILE.exists():
-        print("Cargando datos historicos reales...")
+        print("Cargando datos historicos desde CSV...")
         df = pd.read_csv(HISTORICAL_FILE)
         df['timestamp'] = pd.to_datetime(df['timestamp'])
         
-        # Filtrar registros con datos válidos
+        # Filtrar registros con datos validos
         df = df[df['occupied'].notnull() & df['capacity'].notnull()]
         df = df[df['capacity'] > 0]
         
-        if len(df) >= 50:  # Mínimo de datos para entrenar
+        if len(df) >= MIN_RECORDS:
             print(f"  [OK] {len(df)} registros historicos cargados")
             df['hour'] = df['timestamp'].dt.hour
             df['weekday'] = df['timestamp'].dt.weekday
@@ -39,7 +74,7 @@ def load_training_data():
     else:
         print("No hay datos historicos. Generando datos sinteticos...")
     
-    # Cargar datos actuales como base para sintéticos
+    # Fallback final: Generar datos sinteticos
     df = pd.read_csv(CURRENT_FILE)
     df['timestamp'] = pd.to_datetime(df['timestamp'])
     df = df[df['occupied'].notnull() & df['capacity'].notnull()]
@@ -135,22 +170,50 @@ def train_model():
     # Evaluacion
     preds = model.predict(X_test)
     mae = mean_absolute_error(y_test, preds)
-    print(f"  [OK] MAE (Error Absoluto Medio): {mae:.2f} espacios")
+    rmse = np.sqrt(mean_squared_error(y_test, preds))
+    r2 = r2_score(y_test, preds)
+    
+    print(f"  [OK] MAE: {mae:.2f} espacios")
+    print(f"  [OK] RMSE: {rmse:.2f} espacios")
+    print(f"  [OK] R2 Score: {r2:.3f}")
     
     # Guardar modelo
+    version = datetime.now().strftime("%Y%m%d_%H%M%S")
     model_path = "models/basel_parking_model.pkl"
     joblib.dump(model, model_path)
     print(f"\nModelo guardado en {model_path}")
     
-    # Guardar metadata
+    # Guardar metadata (archivo)
     metadata = {
+        'version': version,
         'trained_at': pd.Timestamp.now().isoformat(),
         'n_samples': len(X),
         'mae': mae,
+        'rmse': rmse,
+        'r2_score': r2,
         'is_synthetic': needs_synthetic,
         'features': ['hour', 'weekday', 'capacity']
     }
     joblib.dump(metadata, "models/model_metadata.pkl")
+    
+    # Guardar metadata en DB
+    if DB_AVAILABLE:
+        try:
+            with session_scope() as session:
+                ParkingRepository.save_model_metadata(
+                    session,
+                    version=version,
+                    n_samples=len(X),
+                    features=['hour', 'weekday', 'capacity'],
+                    mae=mae,
+                    rmse=rmse,
+                    r2_score=r2,
+                    is_synthetic=needs_synthetic,
+                    model_path=model_path
+                )
+                print("  [OK] Metadata guardada en base de datos")
+        except Exception as e:
+            print(f"  [AVISO] No se pudo guardar metadata en DB: {e}")
     
     print("=" * 60)
     return model, mae

@@ -1,15 +1,30 @@
 """
 Script para actualizar datos de estacionamiento y mantener histórico.
 Puede ejecutarse manualmente o programarse con cron/Task Scheduler.
+
+Guarda datos en:
+1. Base de datos PostgreSQL/SQLite (fuente principal)
+2. Archivos CSV (backup)
 """
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import requests
 import json
 import pandas as pd
 from pathlib import Path
 from datetime import datetime
-import sys
 
-# Configuración
+# Database imports
+try:
+    from database.connection import init_db, session_scope, get_db_info
+    from database.repository import ParkingRepository
+    DB_AVAILABLE = True
+except ImportError:
+    DB_AVAILABLE = False
+
+# Configuracion
 CITY = "Basel"
 API_URL = "https://data.bs.ch/api/explore/v2.1/catalog/datasets/100088/records?select=published%2Clast_downloaded%2Cgeo_point_2d%2Cname%2Ctotal%2Cfree%2Cstatus%2Cid%2Caddress%2Clot_type%2Clink&limit=100&lang=de&timezone=Europe%2FZurich"
 
@@ -160,25 +175,114 @@ def update_all():
     
     print(f"  Procesados {len(df)} estacionamientos")
     
-    # 3. Guardar datos actuales
+    # 3. Guardar en base de datos (si esta disponible)
+    if DB_AVAILABLE:
+        save_to_database(data, df)
+    
+    # 4. Guardar datos actuales en CSV (backup)
     save_current(df)
     
-    # 4. Agregar al histórico
+    # 5. Agregar al historico CSV (backup)
     n_historical = append_to_history(df)
     
-    # 5. Mostrar estadísticas
-    stats = get_historical_stats()
-    if stats:
-        print("\n[ESTADISTICAS DEL HISTORICO]")
-        print(f"  - Registros totales: {stats['total_records']}")
-        print(f"  - Estacionamientos unicos: {stats['unique_parkings']}")
-        print(f"  - Timestamps unicos: {stats['unique_timestamps']}")
-        print(f"  - Rango de fechas: {stats['date_range_start']} a {stats['date_range_end']}")
+    # 6. Mostrar estadisticas
+    if DB_AVAILABLE:
+        show_db_stats()
+    else:
+        stats = get_historical_stats()
+        if stats:
+            print("\n[ESTADISTICAS DEL HISTORICO - CSV]")
+            print(f"  - Registros totales: {stats['total_records']}")
+            print(f"  - Estacionamientos unicos: {stats['unique_parkings']}")
+            print(f"  - Timestamps unicos: {stats['unique_timestamps']}")
+            print(f"  - Rango de fechas: {stats['date_range_start']} a {stats['date_range_end']}")
     
     print("\n[OK] Actualizacion completada exitosamente")
     print("=" * 60)
     
     return True
+
+
+def save_to_database(raw_data: dict, processed_df: pd.DataFrame):
+    """Guarda los datos en la base de datos."""
+    print("\n  [DB] Guardando en base de datos...")
+    
+    init_db()
+    
+    with session_scope() as session:
+        records = raw_data.get('results', [])
+        
+        for record in records:
+            parking_name = record.get('name')
+            
+            # Parse coordinates
+            coords = record.get('geo_point_2d', {})
+            lat = coords.get('lat') if coords else None
+            lon = coords.get('lon') if coords else None
+            
+            # Upsert location
+            location = ParkingRepository.upsert_location(
+                session,
+                city=CITY,
+                parking_name=parking_name,
+                address=record.get('address'),
+                lot_type=record.get('lot_type'),
+                capacity=record.get('total'),
+                latitude=lat,
+                longitude=lon,
+                url=record.get('link'),
+                external_id=record.get('id')
+            )
+            
+            source_ts = pd.to_datetime(record.get('published'))
+            
+            # Insert raw data
+            ParkingRepository.insert_raw_data(
+                session,
+                location_id=location.id,
+                city=CITY,
+                source_timestamp=source_ts,
+                raw_json=record,
+                free_spaces=record.get('free'),
+                total_spaces=record.get('total'),
+                status=record.get('status')
+            )
+            
+            # Calculate processed values
+            total = record.get('total')
+            free = record.get('free')
+            occupied = (total - free) if total is not None and free is not None else None
+            occupancy_pct = (occupied / total * 100) if total and total > 0 and occupied is not None else None
+            
+            # Insert processed data
+            ParkingRepository.insert_processed_data(
+                session,
+                location_id=location.id,
+                city=CITY,
+                parking_name=parking_name,
+                timestamp=source_ts,
+                capacity=total,
+                free_spaces=free,
+                occupied=occupied,
+                occupancy_pct=occupancy_pct,
+                status=record.get('status')
+            )
+        
+        print(f"  [DB] {len(records)} registros guardados")
+
+
+def show_db_stats():
+    """Muestra estadisticas de la base de datos."""
+    db_info = get_db_info()
+    print(f"\n[ESTADISTICAS - {db_info['type']}]")
+    
+    with session_scope() as session:
+        stats = ParkingRepository.get_historical_stats(session, CITY)
+        if stats:
+            print(f"  - Registros totales: {stats['total_records']}")
+            print(f"  - Estacionamientos unicos: {stats['unique_parkings']}")
+            print(f"  - Timestamps unicos: {stats['unique_timestamps']}")
+            print(f"  - Rango: {stats['date_start']} a {stats['date_end']}")
 
 
 if __name__ == "__main__":

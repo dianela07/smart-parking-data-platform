@@ -1,9 +1,21 @@
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
+
 import streamlit as st
 import pandas as pd
 import pydeck as pdk
 import requests
 import ast
 from datetime import datetime, timedelta
+
+# Database imports
+try:
+    from database.connection import init_db, session_scope
+    from database.repository import ParkingRepository
+    DB_AVAILABLE = True
+except ImportError:
+    DB_AVAILABLE = False
 
 # ─────────────────────────────────────────────────────────────
 # Page Config
@@ -74,7 +86,42 @@ st.markdown("""
 # Load Data
 # ─────────────────────────────────────────────────────────────
 @st.cache_data
+def load_data_from_db():
+    """Carga datos desde la base de datos."""
+    if not DB_AVAILABLE:
+        return None
+    
+    try:
+        with session_scope() as session:
+            df = ParkingRepository.processed_to_dataframe(session, city="Basel")
+            if df.empty:
+                return None
+            
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            
+            # Parse coordinates if needed
+            if 'lat' not in df.columns and 'coords' in df.columns:
+                def parse_coords(coord_str):
+                    try:
+                        coords = ast.literal_eval(coord_str)
+                        return coords.get('lat'), coords.get('lon')
+                    except:
+                        return None, None
+                
+                df[['lat', 'lon']] = df['coords'].apply(lambda x: pd.Series(parse_coords(x)))
+            
+            # Map status to readable labels
+            df['status_display'] = df['status'].map(STATUS_MAP).fillna(df['status'])
+            
+            return df
+    except Exception as e:
+        st.error(f"Error cargando desde BD: {e}")
+        return None
+
+
+@st.cache_data
 def load_data():
+    """Carga datos desde CSV (fallback)."""
     df = pd.read_csv("data/processed/Basel_parking.csv")
     df['timestamp'] = pd.to_datetime(df['timestamp'])
     
@@ -131,7 +178,36 @@ def get_historical_stats():
     }
 
 
-df = load_data()
+def get_db_stats():
+    """Obtiene estadísticas de la base de datos."""
+    if not DB_AVAILABLE:
+        return None
+    
+    try:
+        with session_scope() as session:
+            from database.models import ProcessedParkingData, ParkingLocation, Prediction
+            from sqlalchemy import func
+            
+            processed_count = session.query(func.count(ProcessedParkingData.id)).scalar()
+            location_count = session.query(func.count(ParkingLocation.id)).scalar()
+            prediction_count = session.query(func.count(Prediction.id)).scalar()
+            
+            return {
+                'processed_records': processed_count,
+                'locations': location_count,
+                'predictions': prediction_count
+            }
+    except:
+        return None
+
+
+# Intentar cargar desde DB primero, sino desde CSV
+df = load_data_from_db()
+if df is None:
+    df = load_data()
+    DATA_SOURCE = "CSV"
+else:
+    DATA_SOURCE = "PostgreSQL"
 
 # ─────────────────────────────────────────────────────────────
 # Sidebar
@@ -140,9 +216,12 @@ with st.sidebar:
     st.title("Estacionamientos Basilea")
     st.markdown("---")
     
+    # Mostrar fuente de datos
+    st.caption(f"Fuente: {DATA_SOURCE}")
+    
     # Botón de actualización de datos
     st.subheader("Actualizar datos")
-    if st.button("Obtener datos frescos", type="primary", use_container_width=True):
+    if st.button("Obtener datos frescos", type="primary", width="stretch"):
         with st.spinner("Descargando datos de la API..."):
             success, stdout, stderr = update_data_from_api()
             if success:
@@ -157,8 +236,16 @@ with st.sidebar:
     # Mostrar estadísticas del histórico
     hist_stats = get_historical_stats()
     if hist_stats:
-        st.caption(f"Histórico: {hist_stats['unique_timestamps']} capturas")
+        st.caption(f"Historico: {hist_stats['unique_timestamps']} capturas")
         st.caption(f"Desde: {hist_stats['date_start']}")
+    
+    # Mostrar estadísticas de la BD
+    db_stats = get_db_stats()
+    if db_stats:
+        with st.expander("Estadisticas BD"):
+            st.metric("Registros procesados", db_stats['processed_records'])
+            st.metric("Ubicaciones", db_stats['locations'])
+            st.metric("Predicciones", db_stats['predictions'])
     
     st.markdown("---")
     
@@ -298,7 +385,7 @@ with left_col:
             map_style=None,  # Usar estilo por defecto sin Mapbox
         )
         
-        st.pydeck_chart(deck, use_container_width=True)
+        st.pydeck_chart(deck, width="stretch")
         
         # Leyenda con colores visuales
         legend_html = '<div style="display: flex; justify-content: center; gap: 20px; margin-top: 10px;">'
@@ -407,8 +494,8 @@ with pred_col2:
                     pred_capacity = pred_data.get("capacity", capacity)
                     predictions.append({
                         "Hora": future_time.strftime("%H:%M"),
-                        "Ocupados predichos": int(pred_occupied) if isinstance(pred_occupied, (int, float)) else pred_occupied,
-                        "Capacidad": int(pred_capacity) if isinstance(pred_capacity, (int, float)) else pred_capacity
+                        "Ocupados predichos": str(int(pred_occupied)) if isinstance(pred_occupied, (int, float)) else str(pred_occupied),
+                        "Capacidad": str(int(pred_capacity)) if isinstance(pred_capacity, (int, float)) else str(pred_capacity)
                     })
             except requests.exceptions.RequestException:
                 st.error("API no disponible. Inicie el servidor FastAPI: `uvicorn src.api.app:app --reload`")
@@ -417,23 +504,29 @@ with pred_col2:
         if predictions:
             pred_df = pd.DataFrame(predictions)
             
+            # Crear columna numerica para graficos (antes de convertir a string)
+            pred_df['ocupados_num'] = pred_df['Ocupados predichos'].apply(
+                lambda x: int(x) if x.isdigit() else 0
+            )
+            
             # Mostrar tabla con formato
-            st.dataframe(pred_df, use_container_width=True, hide_index=True)
+            st.dataframe(pred_df[['Hora', 'Ocupados predichos', 'Capacidad']], width="stretch", hide_index=True)
             
             # Gráfico de predicción mejorado
-            st.markdown("**Evolución de ocupación predicha**")
+            st.markdown("**Evolucion de ocupacion predicha**")
             
             # Verificar si hay variación en los datos
-            pred_values = pred_df['Ocupados predichos'].tolist()
+            pred_values = pred_df['ocupados_num'].tolist()
             has_variation = len(set(pred_values)) > 1
             
             if has_variation:
                 # Crear datos para el gráfico con área
-                chart_df = pred_df.set_index('Hora')[['Ocupados predichos']].copy()
+                chart_df = pred_df.set_index('Hora')[['ocupados_num']].copy()
+                chart_df.columns = ['Ocupados predichos']
                 st.area_chart(chart_df, color=["#1976d2"])
             else:
                 # Si no hay variación, mostrar como métrica
-                st.info(f"Ocupación predicha constante: **{pred_values[0]}** espacios ocupados para las próximas {pred_hours} hora(s)")
+                st.info(f"Ocupacion predicha constante: **{pred_values[0]}** espacios ocupados para las proximas {pred_hours} hora(s)")
 
 # ─────────────────────────────────────────────────────────────
 # Full Data Table
@@ -442,9 +535,9 @@ with st.expander("Ver tabla completa de datos"):
     display_cols = ['parking_name', 'capacity', 'free_spaces', 'occupied', 'occupancy_pct', 'status_display', 'address']
     display_df = df_filtered[display_cols].copy()
     
-    # Formatear columnas numéricas como enteros o mostrar "-" si es None
+    # Formatear columnas numéricas como strings para evitar problemas de tipo mixto
     for col in ['capacity', 'free_spaces', 'occupied']:
-        display_df[col] = display_df[col].apply(lambda x: int(x) if pd.notna(x) else "-")
+        display_df[col] = display_df[col].apply(lambda x: str(int(x)) if pd.notna(x) else "-")
     
     # Formatear porcentaje con 1 decimal como string o "-" si es None
     display_df['occupancy_pct'] = display_df['occupancy_pct'].apply(lambda x: f"{x:.1f}" if pd.notna(x) else "-")
@@ -455,7 +548,7 @@ with st.expander("Ver tabla completa de datos"):
     
     st.dataframe(
         display_df,
-        use_container_width=True,
+        width="stretch",
         hide_index=True
     )
 

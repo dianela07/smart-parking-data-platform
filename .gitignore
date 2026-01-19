@@ -6,9 +6,20 @@ __pycache__/
 # Data
 data/raw/*
 data/processed/*
+data/historical/*
+data/*.db
 
 # Jupyter / notebooks
 .ipynb_checkpoints/
+
+# Modelos entrenados
+models/*.pkl
+
+# Variables de entorno (CONTRASENAS Y SECRETOS)
+.env
+.env.local
+.env.production
+*.env
 
 # Sistema operativo
 .DS_Store
